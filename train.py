@@ -2,7 +2,8 @@ import time
 from sys import float_info, stdout
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
+from os.path import join, dirname, isfile
+#sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
 import pickle
 
 import pandas as pd
@@ -16,9 +17,103 @@ from data import load_dataset, NCEData, _NCEGenerator, _NCEGeneratorState, load_
 from loss import NegativeSampling, marginLoss
 from models import DM, DBOW, D2V_KG
 from utils import save_training_state
+#from linkPrediction import CreateMetricsForLinkPrediction
+#from tripletClassification import CreateMetricsTriplet
+
+#CUDA_LAUNCH_BLOCKING=1
+print('here is the data directory', os.getcwd())
+import math 
+import matplotlib.pyplot as plt 
+from matplotlib.colors import ListedColormap
+
+
+def createPositiveTriplet(relationDataset):
+    relVal = -1000
+    relList = []
+    for a,  b in relationDataset.items():
+        lists= b
+        if(len(lists)):
+            for c in lists:
+                relList.append(c[-1])
+                if(c[-1]>relVal):
+                    relVal = c[-1]
+    print('here is the unique relation',set(relList),len(set(relList)))
+    return relVal
+
+def createPositiveTripletForTripletClassification(relationDataset):
+    potiveTripletList = []
+    index = 0
+    for a,  b in relationDataset.items():
+        lists= b
+        if(len(lists) and index <600000):
+           for c in lists:
+                h = c[0]
+                t = c[1]
+                r = c[-1]
+                index += 1
+                #print(h,r,t,type(h),type(r),type(t))
+                if(not math.isnan(h) and not math.isnan(r) and not math.isnan(t)):
+                    h = int(h)
+                    r = int(r)
+                    t = int(t)
+                    potiveTripletList.append([[h,t,r]])
+                else:
+                    print("Triplet creation has issue",h,r,t)
+    print('\nTriplet Loading done for Triplet Classificaiton!', len(potiveTripletList))
+    return potiveTripletList
+
+
+def createPositiveTripletForLinkPrediction(relationDataset):
+    potive_triplet_dict = {}
+    index = 0
+    for a,  b in relationDataset.items():
+        lists= b
+        if(len(lists) and index <100000):
+           for c in lists:
+                h = c[0]
+                t = c[1]
+                r = c[-1]
+                #print(h,r,t,type(h),type(r),type(t))
+                if(not math.isnan(h) and not math.isnan(r) and not math.isnan(t)):
+                    h = int(h)
+                    r = int(r)
+                    t = int(t)
+                    index +=1
+                    if(h in potive_triplet_dict.keys()):
+                        embed_dict = potive_triplet_dict[h]
+                        if(r in embed_dict.keys()):
+                            tails =  potive_triplet_dict[h][r]
+                            tails.append(t)
+                            potive_triplet_dict[h][r] = tails
+                        else:
+                            potive_triplet_dict[h][r] = [t]
+                    else:
+                        potive_triplet_dict[h] ={}
+                        potive_triplet_dict[h][r] =[t]
+                else:
+                    print("Triplet creaiton has issue in Link Prediciton",h,r,t)
+    print('\nTriplet Loading done for Link Prediction!', len(potive_triplet_dict))
+    return potive_triplet_dict	
+
 
 def flatten(elems):
-    return [e for elem in elems for e in elem]
+    #print(elems)
+    a = [e for elem in elems for e in elem]
+    #print('before', a)
+    val = []
+    for b in a:
+        temp = []
+        for c in b:
+            if(math.isnan(c)):
+                temp.append(0)
+                print(a,val)
+                
+            else:
+                temp.append(c)
+        val.append(temp)
+    #print('\nShape',torch.LongTensor(val).shape)
+    return val
+    #return [x for x in a if math.isnan(x) == False]
     
 def generate_negative_samples(all_relations,node_tensor,rel_tensor, n_nodes):
     batch_size = node_tensor.shape[0]
@@ -44,17 +139,18 @@ def start(data_file_name,
           num_epochs,
           batch_size,
           lr,
-          early_stopping_rounds=5,
-          margin=0.5,
-          delta=.25,
-          d2v_model_ver='dbow',
-          kg_model_ver='transh',
-          context_size=2,
-          vec_combine_method='sum',
-          save_all=False,
-          generate_plot=True,
-          max_generated_batches=5,
-          num_workers=1):
+          output_dir,
+          early_stopping_rounds,
+          margin,
+          delta,
+          d2v_model_ver,
+          kg_model_ver,
+          context_size,
+          vec_combine_method,
+          save_all,
+          generate_plot,
+          max_generated_batches,
+          num_workers):
     """Trains a new model. The latest checkpoint and the best performing
     model are saved in the *models* directory.
 
@@ -128,10 +224,17 @@ def start(data_file_name,
                              "vectors when using dm")
         if context_size <= 0:
             raise ValueError("Context size must be positive when using dm")
-
+    
     dataset = load_dataset(data_file_name)
     rel_dict, n_rel = load_rel_dataset(rel_data_file_name, len(dataset))
+    print('Total relaiton count', n_rel,len(rel_dict))
     val_rel_dict, _ = load_rel_dataset(val_rel_data_file_name, len(dataset))
+    print('here is the size of validation dataset', len(val_rel_dict), createPositiveTriplet(val_rel_dict))
+    i = 0
+    for a, b in rel_dict.items():
+        if(i<10):
+            print(type(a),type(b),a,b)
+            i += 1
     
     #rel_df_val = pd.read_csv(val_rel_data_file_name, sep='\t', header=None)
     #val_dataset = torch.utils.data.TensorDataset(torch.LongTensor(rel_df_val.values[:,1:4].astype(int)))
@@ -154,7 +257,7 @@ def start(data_file_name,
             context_size,
             num_noise_words,
             _NCEGeneratorState(context_size))
-    
+    print('length of the nce data',len(nce_data),type(nce_data),len(val_rel_dict))
     #if torch.cuda.is_available():
     #    nce_data = nce_data.cuda_()
         
@@ -162,7 +265,7 @@ def start(data_file_name,
     _run(data_file_name, dataset, all_relations, rel_dict, val_rel_dict, n_rel, nce_data, len(nce_data),
          nce_data.vocabulary_size(), context_size, num_noise_words, vec_dim,
          num_epochs, batch_size, lr, early_stopping_rounds, margin, delta, d2v_model_ver, kg_model_ver, vec_combine_method,
-         save_all, generate_plot, d2v_model_ver_is_dbow)
+         save_all, generate_plot, d2v_model_ver_is_dbow,output_dir)
     #except KeyboardInterrupt:
     #    nce_data.stop()
     
@@ -189,7 +292,8 @@ def _run(data_file_name,
          vec_combine_method,
          save_all,
          generate_plot,
-         d2v_model_ver_is_dbow):
+         d2v_model_ver_is_dbow,
+         output_dir):
 
     #if d2v_model_ver_is_dbow:
     #    model = DBOW(vec_dim, num_docs=len(dataset), num_words=vocabulary_size)
@@ -198,10 +302,14 @@ def _run(data_file_name,
     #print (rel_dict)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+    if torch.cuda.is_available():
+        print('\nhere gpu is present')
     total_relations = sum([len(values) for key,values in rel_dict.items()])
-    
-    model = D2V_KG(vec_dim, len(dataset), vocabulary_size, n_rel, d2v_model_ver, kg_model_ver, margin, delta)
+    #potive_triplet_dict = createPositiveTripletForLinkPrediction(rel_dict)
+    #potiveTripletList = createPositiveTripletForTripletClassification(rel_dict)
+    #print('\nchecking for validation and test dataset')
+    #a = potiveTripletList[:300009/2]
+    model = D2V_KG(vec_dim, len(dataset), vocabulary_size, 53, d2v_model_ver, kg_model_ver, margin, delta)
     
     #cost_func = NegativeSampling().to(device)
     optimizer = Adam(params=model.parameters(), lr=lr)
@@ -209,7 +317,7 @@ def _run(data_file_name,
     if torch.cuda.is_available():
         model.cuda()
 
-    print("Dataset comprised of {:d} documents and total {:d} relationships".format(len(dataset), total_relations))
+    print("Dataset comprised of {:d} documents and total {:d} relationships".format(len(dataset), total_relations))#printed
     print("Vocabulary size is {:d}.\n".format(vocabulary_size))
     print("Training started.")
 
@@ -218,7 +326,7 @@ def _run(data_file_name,
     prev_model_file_path = None
     bad_epochs = 0
     #kg_loss_fn = marginLoss().to(device)
-    
+    lossDict = {'Training Loss' : [], 'Validation Loss': []}#AKS
     for epoch_i in range(num_epochs):
         if bad_epochs < early_stopping_rounds:
             epoch_start_time = time.time()
@@ -233,91 +341,92 @@ def _run(data_file_name,
             for batch_i in range(num_batches):
                 batch = data_generator.next() #next(data_generator)
                 rel_batch = torch.LongTensor(flatten([rel_dict[i] for i in torch.unique_consecutive(batch.doc_ids).cpu().numpy()]))
-                
-                if torch.cuda.is_available():
-                    batch.cuda_()
-                    rel_batch = rel_batch.cuda()
-                #print (batch.doc_ids)
-                
-                tj = torch.LongTensor(np.asarray(random.sample(np.arange(0,len(dataset)).tolist(), rel_batch.shape[0])))
-                #tj = generate_negative_samples(all_relations,rel_batch[:,0],rel_batch[:,2], len(dataset))
-                
-                #print (rel_batch.shape, tj.shape)
-                
-                total_loss, d2v_loss, kg_loss, x, pos, neg = model.forward(batch.context_ids,batch.doc_ids,batch.target_noise_ids,rel_batch[:,0].to(device), \
-                                                       rel_batch[:,1].to(device), rel_batch[:,2].to(device), tj.to(device))
-                
-                #if d2v_model_ver_is_dbow:
-                #    x = model.forward(batch.doc_ids, batch.target_noise_ids)
-                #else:
-                #    x = model.forward(
-                #        batch.context_ids,
-                #        batch.doc_ids,
-                #        batch.target_noise_ids)
-                
-                '''
-                if d2v_model_ver != 'none':
-                    d2v_loss = cost_func.forward(x)
-                else:
-                    d2v_loss = torch.FloatTensor([0])
-                
-                if kg_model_ver != 'none':
-                    kg_loss = kg_loss_fn(pos, neg, torch.FloatTensor(np.asarray([margin]*pos.shape[0])).to(device))
-                else:
-                    kg_loss = torch.FloatTensor([0])
-                    
-                if d2v_model_ver != 'none' and kg_model_ver != 'none':
-                    total_loss = (1-delta)*d2v_loss + delta*kg_loss
-                elif d2v_model_ver != 'none':
-                    total_loss = d2v_loss
-                elif kg_model_ver != 'none':
-                    total_loss = kg_loss
-                else:
-                    raise ValueError("Both D2V and KG model can not be none")
-                '''
-                
-                loss.append(total_loss.item())
-                d2v_losses.append(d2v_loss.item())
-                kg_losses.append(kg_loss.item())
-                model.zero_grad()
-                total_loss.backward()
-                optimizer.step()
-
-                rel_batch = torch.LongTensor(flatten([val_rel_dict[i] for i in torch.unique_consecutive(batch.doc_ids).cpu().numpy()]))
-                
-                try:
+                if(rel_batch.shape[0]):
                     if torch.cuda.is_available():
                         batch.cuda_()
                         rel_batch = rel_batch.cuda()
                     #print (batch.doc_ids)
-                    
+
                     tj = torch.LongTensor(np.asarray(random.sample(np.arange(0,len(dataset)).tolist(), rel_batch.shape[0])))
                     #tj = generate_negative_samples(all_relations,rel_batch[:,0],rel_batch[:,2], len(dataset))
-                    
-                    #print (rel_batch.shape, tj.shape)
-                    
-                    with torch.no_grad():
-                        total_loss, d2v_loss, kg_loss, x, pos, neg = model.forward(batch.context_ids,batch.doc_ids,batch.target_noise_ids,rel_batch[:,0].to(device), \
-                                                           rel_batch[:,1].to(device), rel_batch[:,2].to(device), tj.to(device))
-                    
-                    val_loss.append(total_loss.item())
-                    val_d2v_losses.append(d2v_loss.item())
-                    val_kg_losses.append(kg_loss.item())
 
-                except:
-                    pass
+                    #print (rel_batch)
+
+                    total_loss, d2v_loss, kg_loss, x, pos, neg = model.forward(batch.context_ids,batch.doc_ids,batch.target_noise_ids,rel_batch[:,0].to(device), \
+                                                           rel_batch[:,1].to(device), rel_batch[:,2].to(device), tj.to(device))
+
+                    #if d2v_model_ver_is_dbow:
+                    #    x = model.forward(batch.doc_ids, batch.target_noise_ids)
+                    #else:
+                    #    x = model.forward(
+                    #        batch.context_ids,
+                    #        batch.doc_ids,
+                    #        batch.target_noise_ids)
+
+                    '''
+                    if d2v_model_ver != 'none':
+                        d2v_loss = cost_func.forward(x)
+                    else:
+                        d2v_loss = torch.FloatTensor([0])
+
+                    if kg_model_ver != 'none':
+                        kg_loss = kg_loss_fn(pos, neg, torch.FloatTensor(np.asarray([margin]*pos.shape[0])).to(device))
+                    else:
+                        kg_loss = torch.FloatTensor([0])
+
+                    if d2v_model_ver != 'none' and kg_model_ver != 'none':
+                        total_loss = (1-delta)*d2v_loss + delta*kg_loss
+                    elif d2v_model_ver != 'none':
+                        total_loss = d2v_loss
+                    elif kg_model_ver != 'none':
+                        total_loss = kg_loss
+                    else:
+                        raise ValueError("Both D2V and KG model can not be none")
+                    '''
+                    #print(total_loss,type(total_loss))
+                    loss.append(total_loss.item())
+                    d2v_losses.append(d2v_loss.item())
+                    kg_losses.append(kg_loss.item())
+                    model.zero_grad()
+                    total_loss.backward()
+                    optimizer.step()
+
+                    rel_batch = torch.LongTensor(flatten([val_rel_dict[i] for i in torch.unique_consecutive(batch.doc_ids).cpu().numpy()]))
+                    if(rel_batch.shape[0]):
+                        try:
+                            if torch.cuda.is_available():
+                                batch.cuda_()
+                                rel_batch = rel_batch.cuda()
+                            #print (batch.doc_ids)
+
+                            tj = torch.LongTensor(np.asarray(random.sample(np.arange(0,len(dataset)).tolist(), rel_batch.shape[0])))
+                            #tj = generate_negative_samples(all_relations,rel_batch[:,0],rel_batch[:,2], len(dataset))
+
+                            #print (rel_batch.shape, tj.shape)
+
+                            with torch.no_grad():
+                                total_loss, d2v_loss, kg_loss, x, pos, neg = model.forward(batch.context_ids,batch.doc_ids,batch.target_noise_ids,rel_batch[:,0].to(device), \
+                                                                   rel_batch[:,1].to(device), rel_batch[:,2].to(device), tj.to(device))
+
+                            val_loss.append(total_loss.item())
+                            val_d2v_losses.append(d2v_loss.item())
+                            val_kg_losses.append(kg_loss.item())
+
+                        except:
+                            pass
                     
                 _print_progress(epoch_i, batch_i, num_batches)
-                
+            
             # end of epoch
             train_loss = torch.mean(torch.FloatTensor(loss))
             train_kg_loss = torch.mean(torch.FloatTensor(kg_losses))
             train_d2v_loss = torch.mean(torch.FloatTensor(d2v_losses))
-            
+            lossDict['Training Loss'].append(train_loss)# [], 'Validation Loss': []}#AKS
             try:
                 val_loss = torch.mean(torch.FloatTensor(val_loss))
                 val_kg_loss = torch.mean(torch.FloatTensor(val_kg_losses))
                 val_d2v_loss = torch.mean(torch.FloatTensor(val_d2v_losses))
+                lossDict['Validation Loss'].append(val_loss)#AKS
             except:
                 val_loss, val_kg_loss, val_d2v_loss = float("inf"), float("inf"), float("inf")
                 
@@ -325,8 +434,14 @@ def _run(data_file_name,
                 bad_epochs = 0
             else:
                 bad_epochs += 1
-                
-            is_best_loss = val_loss < best_val_loss
+            #if(epoch_i >-1):
+                #print('\nCalling now to evaluate Triplet Classification task')
+                #CreateMetricsTriplet(potiveTripletList,kg_model_ver,epoch_i,model,output_dir)
+                #print('\nCalling now to evaluate link prediction task')
+            #else:
+                #print('\nNo eval of task')
+            #CreateMetricsForLinkPrediction(potive_triplet_dict,kg_model_ver,epoch_i,model,output_dir)
+            is_best_loss = val_loss < best_val_loss#Mark
             best_train_loss = min(train_loss, best_train_loss)
             best_val_loss = min(val_loss, best_val_loss)
             
@@ -356,7 +471,8 @@ def _run(data_file_name,
                 generate_plot,
                 is_best_loss,
                 prev_model_file_path,
-                d2v_model_ver_is_dbow)
+                d2v_model_ver_is_dbow,
+                output_dir)
 
             epoch_total_time = round(time.time() - epoch_start_time)
             
@@ -365,13 +481,21 @@ def _run(data_file_name,
 
         else:
             pass
+    imageFilepath1 = output_dir+'/LossValuePLot.png'
+    imageFilepath2 = output_dir+'/LossValuePLot.pdf'
+    plt.plot(lossDict['Training Loss'], label='Training Loss')
+    plt.plot(lossDict['Validation Loss'], label='Validation Loss')
+    plt.ylabel('Training and Validation Loss')
+    plt.xlabel('epochs ')   
+    plt.legend()
+    plt.savefig(imageFilepath1)
+    plt.savefig(imageFilepath2)
 
 def _print_progress(epoch_i, batch_i, num_batches):
     progress = round((batch_i + 1) / num_batches * 100)
-    print("\rEpoch {:d}".format(epoch_i + 1), end='')
+    #print("\rEpoch {:d}".format(epoch_i + 1), end='')
     stdout.write(" - {:d}%".format(progress))
     stdout.flush()
-
 
 if __name__ == '__main__':
     fire.Fire(start)
